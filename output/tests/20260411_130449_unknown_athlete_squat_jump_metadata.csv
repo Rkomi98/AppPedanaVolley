@@ -1,2 +1,0 @@
-athlete_first_name,athlete_last_name,athlete_id,notes,test_type,duration_s,sample_rate_hz,channels,acquisition_mode,created_at
-,,,,Squat Jump,8.0,7812.5,"P1_FZ1, P1_FZ2, P1_FZ3, P1_FZ4, P2_FZ1, P2_FZ2, P2_FZ3, P2_FZ4",Simulata,2026-04-11T13:04:49
