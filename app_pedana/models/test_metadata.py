@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
 
-@dataclass(slots=True)
+@dataclass
 class AthleteInfo:
     first_name: str
     last_name: str
@@ -16,7 +16,7 @@ class AthleteInfo:
         return full_name or "unknown_athlete"
 
 
-@dataclass(slots=True)
+@dataclass
 class TestMetadata:
     athlete: AthleteInfo
     test_type: str

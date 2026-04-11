@@ -10,7 +10,7 @@ class DaqError(RuntimeError):
     """Raised for DAQ-related failures."""
 
 
-@dataclass(slots=True)
+@dataclass
 class DaqReadResult:
     frame: pd.DataFrame
     elapsed_s: float

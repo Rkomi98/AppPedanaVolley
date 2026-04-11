@@ -14,11 +14,12 @@ from app_pedana.services.aggregations import add_force_aggregations
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass
 class WorkerSettings:
     mode: str
     active_channels: list[str]
     duration_s: float
+    test_type: str
 
 
 class AcquisitionWorker(QThread):
@@ -41,6 +42,7 @@ class AcquisitionWorker(QThread):
             mode=self.settings.mode,
             config=self.config,
             active_channels=self.settings.active_channels,
+            test_type=self.settings.test_type,
         )
         elapsed_s = 0.0
 

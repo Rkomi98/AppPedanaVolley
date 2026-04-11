@@ -11,7 +11,12 @@ def create_reader(
     mode: str,
     config: AppConfig,
     active_channels: list[str],
+    test_type: str = "Altro",
 ) -> BaseDaqReader:
     if mode == "ni":
         return NIDaqReader(config=config, active_channels=active_channels)
-    return SimulatedDaqReader(config=config, active_channels=active_channels)
+    return SimulatedDaqReader(
+        config=config,
+        active_channels=active_channels,
+        test_type=test_type,
+    )

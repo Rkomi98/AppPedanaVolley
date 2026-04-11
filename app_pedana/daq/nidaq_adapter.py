@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from time import perf_counter
 
 import pandas as pd
@@ -30,6 +31,11 @@ class NIDaqReader(BaseDaqReader):
         self.start_ts: float | None = None
 
     def open(self) -> None:
+        if sys.platform == "darwin":
+            raise DaqError(
+                "NI Hardware non e supportato su macOS. Usa la modalita Simulata sul Mac e la modalita NI Hardware su Windows."
+            )
+
         if nidaqmx is None:
             raise DaqError(
                 "Libreria nidaqmx non disponibile. Installa il package Python e verifica NI-DAQmx."
@@ -61,8 +67,12 @@ class NIDaqReader(BaseDaqReader):
             )
         except KeyError as exc:
             raise DaqError(f"Canale logico non configurato: {exc}") from exc
+        except DaqError:
+            raise
         except NIDaqException as exc:
             raise DaqError(_map_nidaq_error(exc)) from exc
+        except Exception as exc:
+            raise DaqError(f"Errore inizializzazione NI-DAQmx: {exc}") from exc
 
     def close(self) -> None:
         if self.task is not None:

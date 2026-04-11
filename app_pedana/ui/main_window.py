@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections import deque
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -28,6 +29,7 @@ from app_pedana.config.defaults import AppConfig
 from app_pedana.models.channel_map import FZ_CHANNEL_NAMES
 from app_pedana.models.test_metadata import AthleteInfo, TestMetadata
 from app_pedana.services.acquisition_session import AcquisitionSession
+from app_pedana.services.recorder import build_summary
 from app_pedana.ui.workers import AcquisitionWorker, WorkerSettings
 
 
@@ -41,6 +43,8 @@ class MainWindow(QMainWindow):
         self.output_dir = output_dir
         self.worker: AcquisitionWorker | None = None
         self.session: AcquisitionSession | None = None
+        self.latest_row = None
+        self._live_view_dirty = False
         self.history_seconds = 4.0
         self.plot_cache = {
             "timestamp_s": deque(maxlen=int(self.config.sample_rate_hz * self.history_seconds)),
@@ -48,14 +52,14 @@ class MainWindow(QMainWindow):
             "P2_total_FZ": deque(maxlen=int(self.config.sample_rate_hz * self.history_seconds)),
             "FZ_total": deque(maxlen=int(self.config.sample_rate_hz * self.history_seconds)),
         }
-        self.raw_cache = {
-            channel: deque(maxlen=int(self.config.sample_rate_hz * self.history_seconds))
-            for channel in FZ_CHANNEL_NAMES
-        }
 
         self.setWindowTitle("AppPedanaVolley MVP")
-        self.resize(1400, 860)
+        self.resize(1180, 760)
         self._build_ui()
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(self.config.ui_refresh_interval_ms)
+        self.refresh_timer.timeout.connect(self._flush_live_view)
+        self.refresh_timer.start()
         self._set_idle_state()
 
     def _build_ui(self) -> None:
@@ -87,6 +91,8 @@ class MainWindow(QMainWindow):
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("NI Hardware", userData="ni")
         self.mode_combo.addItem("Simulata", userData="simulated")
+        if sys.platform == "darwin":
+            self.mode_combo.setCurrentIndex(1)
 
         self.test_type_combo = QComboBox()
         self.test_type_combo.addItems(
@@ -102,6 +108,11 @@ class MainWindow(QMainWindow):
         self.channels_label.setWordWrap(True)
 
         test_form.addRow("Sorgente", self.mode_combo)
+        if sys.platform == "darwin":
+            mac_hint = QLabel("Su macOS la lettura NI reale non e supportata: usa Simulata.")
+            mac_hint.setWordWrap(True)
+            mac_hint.setStyleSheet("color: #9c6644; font-size: 12px;")
+            test_form.addRow("", mac_hint)
         test_form.addRow("Tipo test", self.test_type_combo)
         test_form.addRow("Durata [s]", self.duration_spin)
         test_form.addRow("Sample rate", self.sample_rate_label)
@@ -122,6 +133,10 @@ class MainWindow(QMainWindow):
         self.left_value_label = QLabel("0.000 V")
         self.right_value_label = QLabel("0.000 V")
         self.total_value_label = QLabel("0.000 V")
+        self.last_save_label = QLabel("Nessun test salvato")
+        self.report_label = QLabel("Report finale disponibile a fine test")
+        self.last_save_label.setWordWrap(True)
+        self.report_label.setWordWrap(True)
         signal_grid.addWidget(self.left_signal_label, 0, 0)
         signal_grid.addWidget(self.right_signal_label, 0, 1)
         signal_grid.addWidget(QLabel("P1_total_FZ"), 1, 0)
@@ -130,6 +145,10 @@ class MainWindow(QMainWindow):
         signal_grid.addWidget(self.right_value_label, 2, 1)
         signal_grid.addWidget(QLabel("FZ_total"), 3, 0)
         signal_grid.addWidget(self.total_value_label, 3, 1)
+        signal_grid.addWidget(QLabel("Ultimo salvataggio"), 4, 0)
+        signal_grid.addWidget(self.last_save_label, 4, 1)
+        signal_grid.addWidget(QLabel("Report finale"), 5, 0)
+        signal_grid.addWidget(self.report_label, 5, 1)
 
         layout.addWidget(athlete_box)
         layout.addWidget(test_box)
@@ -147,33 +166,15 @@ class MainWindow(QMainWindow):
         self.aggregated_plot.showGrid(x=True, y=True, alpha=0.2)
         self.aggregated_plot.setLabel("left", "Volt")
         self.aggregated_plot.setLabel("bottom", "Tempo", units="s")
+        self.aggregated_plot.setClipToView(True)
+        self.aggregated_plot.setDownsampling(mode="peak")
         self.agg_curves = {
             "P1_total_FZ": self.aggregated_plot.plot(pen=pg.mkPen("#0077b6", width=2), name="P1"),
             "P2_total_FZ": self.aggregated_plot.plot(pen=pg.mkPen("#d62828", width=2), name="P2"),
             "FZ_total": self.aggregated_plot.plot(pen=pg.mkPen("#2a9d8f", width=3), name="Total"),
         }
 
-        self.raw_plot = pg.PlotWidget(title="Canali FZ raw")
-        self.raw_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.raw_plot.setLabel("left", "Volt")
-        self.raw_plot.setLabel("bottom", "Tempo", units="s")
-        palette = [
-            "#264653",
-            "#2a9d8f",
-            "#e9c46a",
-            "#f4a261",
-            "#e76f51",
-            "#457b9d",
-            "#6d597a",
-            "#ef476f",
-        ]
-        self.raw_curves = {
-            channel: self.raw_plot.plot(pen=pg.mkPen(palette[idx], width=1.5))
-            for idx, channel in enumerate(FZ_CHANNEL_NAMES)
-        }
-
         layout.addWidget(self.aggregated_plot, 1)
-        layout.addWidget(self.raw_plot, 1)
         return layout
 
     def _build_indicator(self, label: str) -> QLabel:
@@ -184,9 +185,9 @@ class MainWindow(QMainWindow):
         )
         return widget
 
-    def _set_idle_state(self) -> None:
+    def _set_idle_state(self, *, status_message: str = "Pronto") -> None:
         self.stop_button.setEnabled(False)
-        self.statusBar().showMessage("Pronto")
+        self.statusBar().showMessage(status_message)
 
     def start_acquisition(self) -> None:
         if self.worker is not None:
@@ -208,11 +209,13 @@ class MainWindow(QMainWindow):
         )
         self.session = AcquisitionSession(metadata=metadata, output_dir=self.output_dir)
         self._reset_plots()
+        self.report_label.setText("Acquisizione in corso...")
 
         settings = WorkerSettings(
             mode=self.mode_combo.currentData(),
             active_channels=FZ_CHANNEL_NAMES.copy(),
             duration_s=metadata.duration_s,
+            test_type=metadata.test_type,
         )
         self.worker = AcquisitionWorker(config=self.config, settings=settings)
         self.worker.block_ready.connect(self._on_block_ready)
@@ -239,11 +242,8 @@ class MainWindow(QMainWindow):
         self.plot_cache["timestamp_s"].extend(timestamps)
         for name in ("P1_total_FZ", "P2_total_FZ", "FZ_total"):
             self.plot_cache[name].extend(frame[name].tolist())
-        for channel in FZ_CHANNEL_NAMES:
-            self.raw_cache[channel].extend(frame[channel].tolist())
-
-        self._refresh_plots()
-        self._refresh_indicators(frame.iloc[-1])
+        self.latest_row = frame.iloc[-1]
+        self._live_view_dirty = True
 
     def _on_worker_finished(self) -> None:
         self._finalize_session()
@@ -263,6 +263,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            signals = self.session.combined_frame()
             export_paths = self.session.save()
         except Exception as exc:
             logger.exception("Export failed")
@@ -270,23 +271,33 @@ class MainWindow(QMainWindow):
             self._set_idle_state()
             return
 
-        message = (
-            "Test salvato con successo.\n\n"
-            f"CSV segnali: {export_paths['signals_csv']}\n"
-            f"CSV metadata: {export_paths['metadata_csv']}\n"
-            f"Excel: {export_paths['excel']}"
+        summary = build_summary(signals)
+        self.last_save_label.setText(str(export_paths["excel"]))
+        self.report_label.setText(
+            "\n".join(
+                [
+                    f"Samples: {int(summary['samples'])}",
+                    f"Durata: {summary['duration_s']:.3f} s",
+                    f"Picco P1_total_FZ: {summary['p1_peak']:.3f} V",
+                    f"Picco P2_total_FZ: {summary['p2_peak']:.3f} V",
+                    f"Picco FZ_total: {summary['total_peak']:.3f} V",
+                ]
+            )
         )
-        QMessageBox.information(self, "Export completato", message)
-        self.statusBar().showMessage("Test salvato")
         self.session = None
-        self._set_idle_state()
+        self._set_idle_state(status_message=f"Test salvato: {export_paths['excel']}")
 
     def _refresh_plots(self) -> None:
         timestamps = list(self.plot_cache["timestamp_s"])
         for name, curve in self.agg_curves.items():
             curve.setData(timestamps, list(self.plot_cache[name]))
-        for channel, curve in self.raw_curves.items():
-            curve.setData(timestamps, list(self.raw_cache[channel]))
+
+    def _flush_live_view(self) -> None:
+        if not self._live_view_dirty or self.latest_row is None:
+            return
+        self._refresh_plots()
+        self._refresh_indicators(self.latest_row)
+        self._live_view_dirty = False
 
     def _refresh_indicators(self, last_row) -> None:
         left = float(last_row["P1_total_FZ"])
@@ -307,8 +318,8 @@ class MainWindow(QMainWindow):
     def _reset_plots(self) -> None:
         for cache in self.plot_cache.values():
             cache.clear()
-        for cache in self.raw_cache.values():
-            cache.clear()
+        self.latest_row = None
+        self._live_view_dirty = True
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.worker is not None:
