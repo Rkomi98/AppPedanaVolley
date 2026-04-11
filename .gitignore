@@ -41,6 +41,10 @@ htmlcov/
 *.sqlite3
 *.db
 
+# Application output directories
+output/
+outputs/
+
 # Editors and OS
 .vscode/
 .idea/
