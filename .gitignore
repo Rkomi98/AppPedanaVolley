@@ -40,6 +40,8 @@ htmlcov/
 # Databases / generated data you don't want committed
 *.sqlite3
 *.db
+output/
+windows_test/output/
 
 # Editors and OS
 .vscode/
